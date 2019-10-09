@@ -37,11 +37,12 @@ class TrackVisualizerOperator(Op):
         self._logger = setup_logging(self.name, log_file_name)
         self._flags = flags
         self._colors = {'pedestrian': [255, 0, 0],
-                        'vehicle': [0, 255, 0]}
+                        'vehicle': [0, 0, 255]}
 
         # Queues of incoming data.
         self._tracking_msgs = deque()
         self._top_down_segmentation_msgs = deque()
+        self._prediction_msgs = deque()
         self._lock = threading.Lock()
         self._frame_cnt = 0
 
@@ -50,15 +51,20 @@ class TrackVisualizerOperator(Op):
 
     @staticmethod
     def setup_streams(input_streams, top_down_stream_name):
+        print ("INPUT STREAMS", input_streams)
         input_streams.filter(pylot.utils.is_tracking_stream).add_callback(
             TrackVisualizerOperator.on_tracking_update)
         input_streams.filter(pylot.utils.is_segmented_camera_stream).filter_name(
             top_down_stream_name).add_callback(
             TrackVisualizerOperator.on_top_down_segmentation_update)
+
+        if FLAGS.planning_imitation:
+            input_streams.filter(pylot.utils.is_prediction_stream).add_callback(
+                TrackVisualizerOperator.on_prediction_update)
         # Register a completion watermark callback. The callback is invoked
         # after all the messages with a given timestamp have been received.
         input_streams.add_completion_callback(
-           TrackVisualizerOperator.on_notification) 
+            TrackVisualizerOperator.on_notification) 
         return []
 
     def synchronize_msg_buffers(self, timestamp, buffers):
@@ -78,20 +84,29 @@ class TrackVisualizerOperator(Op):
         with self._lock:
             self._top_down_segmentation_msgs.append(msg)
 
+    def on_prediction_update(self, msg):
+        print ("RECEIVED PREDICTION")
+        print ("MESSAGE", msg.obj_trajectories[0].trajectory)
+        with self._lock:
+            self._prediction_msgs.append(msg)
+
     def on_notification(self, msg):
         # Pop the oldest message from each buffer.
         with self._lock:
             if not self.synchronize_msg_buffers(
                     msg.timestamp,
-                    [self._tracking_msgs, self._top_down_segmentation_msgs]):
+                    [self._tracking_msgs, self._top_down_segmentation_msgs,
+                     self._prediction_msgs]):
                 return
             tracking_msg = self._tracking_msgs.popleft()
             segmentation_msg = self._top_down_segmentation_msgs.popleft()
+            prediction_msg = self._prediction_msgs.popleft()
 
-        self._logger.info('Timestamps {} {}'.format(
-            tracking_msg.timestamp, segmentation_msg.timestamp))
+        self._logger.info('Timestamps {} {} {}'.format(
+            tracking_msg.timestamp, segmentation_msg.timestamp,
+            prediction_msg.timestamp))
 
-        assert (tracking_msg.timestamp == segmentation_msg.timestamp)
+        assert (tracking_msg.timestamp == segmentation_msg.timestamp == prediction_msg.timestamp)
 
         self._frame_cnt += 1
 
@@ -115,6 +130,10 @@ class TrackVisualizerOperator(Op):
                     cv2.circle(display_img,
                                (int(point.x), int(point.y)),
                                3, self._colors[obj.obj_class], -1)
+
+            # TODO (alvin): future points visualizer
+            # If we have a predictor, draw predicted trajectory on image.
+                                           
         pylot.utils.add_timestamp(msg.timestamp, display_img)
         cv2.imshow('img', display_img)
         cv2.waitKey(1)

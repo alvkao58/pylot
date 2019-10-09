@@ -119,6 +119,14 @@ def create_ground_tracking_stream(name):
 def is_ground_tracking_stream(stream):
     return stream.get_label('tracking') == 'true'
 
+def create_prediction_stream(name):
+    return DataStream(name=name,
+                      labels={'prediction': 'true'})
+
+def is_prediction_stream(stream):
+#return stream.name == 'prediction'
+    return stream.get_label('prediction') == 'true'
+
 # ERDOS streams
 def create_segmented_camera_stream(name):
     return DataStream(name=name,

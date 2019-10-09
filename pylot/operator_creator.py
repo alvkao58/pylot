@@ -211,6 +211,20 @@ def create_planning_op(graph, goal_location):
         })
     return planning_op
 
+def create_planning_imitation_op(graph, goal_location, output_stream_name):
+    from pylot.planning.imitative_model_operator import ImitativeModelOperator
+    imitative_model_planning_op = graph.add(
+        ImitativeModelOperator,
+        name='imitative_model_planning',
+        init_args={
+            'flags': FLAGS,
+            'goal_location': goal_location,
+            'log_file_name': FLAGS.log_file_name,
+            'csv_file_name': FLAGS.csv_log_file_name
+        },
+        setup_args={'output_stream_name': output_stream_name})
+    return imitative_model_planning_op
+
 def create_control_op(graph):
     from pylot.control.pid_control_operator import PIDControlOperator
     control_op = graph.add(
@@ -644,6 +658,7 @@ def add_visualization_operators(graph,
                                 camera_ops,
                                 lidar_ops,
                                 perfect_tracker_ops,
+                                imitative_model_planning_op,
                                 rgb_camera_name,
                                 depth_camera_name,
                                 front_segmented_camera_name,
@@ -689,8 +704,12 @@ def add_visualization_operators(graph,
             graph,
             top_down_camera_setup,
             top_down_segmented_camera_name)
-        graph.connect(camera_ops + perfect_tracker_ops, [top_down_tracker_video_op])
 
+        if FLAGS.planning_imitation:
+            graph.connect(camera_ops + perfect_tracker_ops + [imitative_model_planning_op], [top_down_tracker_video_op])
+        else:
+            graph.connect(camera_ops + perfect_tracker_ops, [top_down_tracker_video_op])
+            
 def add_recording_operators(graph,
                             camera_ops,
                             carla_op,

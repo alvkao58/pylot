@@ -1,3 +1,8 @@
+import sys
+print (sys.version)
+import tensorflow as tf
+print (tf.__version__)
+
 from absl import app
 from absl import flags
 
@@ -235,14 +240,27 @@ def add_planning_component(graph,
     graph.connect([carla_op], [planning_op])
     graph.connect([planning_op], [agent_op])
 
+def add_imitative_model_planning_component(graph,
+                                           goal_location,
+                                           carla_op,
+                                           lidar_ops,
+                                           perfect_tracker_ops):
+    # Add imitative planning module.
+    if FLAGS.planning_imitation:
+        imitative_model_planning_op = pylot.operator_creator.create_planning_imitation_op(graph, goal_location, "prediction")
+        graph.connect(lidar_ops, [imitative_model_planning_op])
+        graph.connect(perfect_tracker_ops, [imitative_model_planning_op])
+        graph.connect([carla_op], [imitative_model_planning_op])
+        return imitative_model_planning_op
 
-def add_debugging_component(graph, top_down_camera_setup, carla_op, camera_ops, lidar_ops, perfect_tracker_ops):
+def add_debugging_component(graph, top_down_camera_setup, carla_op, camera_ops, lidar_ops, perfect_tracker_ops, imitative_model_planning_op):
     # Add visual operators.
     pylot.operator_creator.add_visualization_operators(
         graph,
         camera_ops,
         lidar_ops,
         perfect_tracker_ops,
+        imitative_model_planning_op,
         pylot.utils.CENTER_CAMERA_NAME,
         pylot.utils.DEPTH_CAMERA_NAME,
         pylot.utils.FRONT_SEGMENTED_CAMERA_NAME,
@@ -309,6 +327,7 @@ def main(argv):
              'perfect_lane_detector_output',
              carla_op,
              camera_ops)
+        perfect_tracker_ops = None
     else:
         # Add detectors.
         (obj_det_ops,
@@ -321,10 +340,6 @@ def main(argv):
         segmentation_ops = add_segmentation_component(graph, camera_ops)
 
     add_ground_eval_ops(graph, obj_det_ops, camera_ops)
-
-    # Add debugging operators (e.g., visualizers) to the data-flow graph.
-    add_debugging_component(graph, top_down_camera_setup, carla_op, camera_ops, lidar_ops, perfect_tracker_ops)
-
 
     # Add the behaviour planning agent operator.
     agent_op = add_agent_op(graph,
@@ -344,6 +359,14 @@ def main(argv):
                            carla_op,
                            agent_op,
                            city_name='Town{:02d}'.format(FLAGS.carla_town))
+
+    imitative_model_planning_op = add_imitative_model_planning_component(graph,
+                                          goal_location,
+                                          carla_op,
+                                          lidar_ops,
+                                          perfect_tracker_ops)
+    # Add debugging operators (e.g., visualizers) to the data-flow graph.
+    add_debugging_component(graph, top_down_camera_setup, carla_op, camera_ops, lidar_ops, perfect_tracker_ops, imitative_model_planning_op)
 
     graph.execute(FLAGS.framework)
 

@@ -54,8 +54,54 @@ class DetectionEvalGroundOperator(Op):
                 self._logger.info(
                     "The latency is {} and the average precision is {}".format(
                         latency, avg_precision))
+#self._csv_logger.info('{},{},{},{}'.format(
+#                    time_epoch_ms(), self.name, latency, avg_precision))
+                
+                mAP = get_pedestrian_mAP(bboxes, old_bboxes)
                 self._csv_logger.info('{},{},{},{}'.format(
-                    time_epoch_ms(), self.name, latency, avg_precision))
+                    time_epoch_ms(), self.name, latency, mAP))
+#for (old_game_time, old_bboxes) in self._ground_bboxes:
+#            print (game_time - old_game_time, bboxes, old_bboxes)
+#            print ("-----")
+#            mAP = get_pedestrian_mAP(bboxes, old_bboxes)
+#            self._logger.info("mAP {}".format(mAP))
 
         # Buffer the new bounding boxes.
         self._ground_bboxes.append((game_time, bboxes))
+
+def get_pedestrian_mAP(ground_bboxes, detected_objs):
+    """Return mAP with IoU threshold of 0.5"""
+    # Select the pedestrians.
+    confidence_bbox = []
+    for detected_obj in detected_objs:
+        confidence_bbox.append(
+            (1.0, detected_obj))
+    # Sort bboxes descending by score.
+    confidence_bbox.sort()
+    confidence_bbox.reverse()
+    detected_bboxes = [bbox for (score, bbox) in confidence_bbox]
+    # Compute recall precision. The results are sorted in descending
+    # order by recall.
+    prec_rec = []
+    while (len(detected_bboxes) > 0):
+        # Get precision recall with 0.5 IoU threshold .
+        precision, recall = get_precision_recall_at_iou(
+            ground_bboxes, detected_bboxes, 0.5)
+        prec_rec.append((precision, recall))
+        detected_bboxes.pop()
+    # Append (0, 0) to also cover the area from first recall point to 0 recall.
+    prec_rec.append((0, 0))
+    avg_precision = 0.0
+    max_precision = 0.0
+    max_precision = None
+    last_recall = None
+    for (precision, recall) in prec_rec:
+        if max_precision is None:
+            max_precision = precision
+            last_recall = recall
+        else:
+            avg_precision += (last_recall - recall) * max_precision
+            max_precision = max(max_precision, precision)
+            last_recall = recall
+    return avg_precision
+

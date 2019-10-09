@@ -81,6 +81,8 @@ flags.DEFINE_float('traffic_light_det_min_score_threshold', 0.3,
                    'Min score threshold for bounding box')
 flags.DEFINE_string('depth_est_model_path', 'dependencies/anynet/',
                     'Path to AnyNet depth estimation model')
+flags.DEFINE_bool('planning_imitation', False,
+		  'True to enable the imitative trajectory planner.')
 
 # Agent flags.
 flags.DEFINE_bool('stop_for_traffic_lights', True,
@@ -234,6 +236,8 @@ flags.DEFINE_float('segmentation_dla_gpu_memory_fraction', 0.2,
                    'GPU memory fraction allocated to DLA segmentation')
 flags.DEFINE_float('segmentation_drn_gpu_memory_fraction', 0.2,
                    'GPU memory fraction allocated to DRN segmentation')
+flags.DEFINE_float('planning_imitative_gpu_memory_fraction', 0.2,
+                   'GPU memory fraction allocated to imitative trajectory planning')
 
 # Recording operators
 flags.DEFINE_string('data_path', 'data/', 'Path where to logged data')
