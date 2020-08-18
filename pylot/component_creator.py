@@ -392,6 +392,11 @@ def add_prediction(obstacles_tracking_stream,
             assert lidar_setup is not None
             prediction_stream = pylot.operator_creator.add_r2p2_prediction(
                 point_cloud_stream, obstacles_tracking_stream, lidar_setup)
+        elif FLAGS.prediction_type == 'mfp':
+            assert point_cloud_stream is not None
+            assert lidar_setup is not None
+            prediction_stream = pylot.operator_creator.add_mfp_prediction(
+                point_cloud_stream, obstacles_tracking_stream, lidar_setup)
         else:
             raise ValueError('Unexpected prediction_type {}'.format(
                 FLAGS.prediction_type))

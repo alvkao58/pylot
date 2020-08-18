@@ -75,7 +75,7 @@ flags.DEFINE_float(
 # Prediction
 ######################################################################
 flags.DEFINE_bool('prediction', False, 'True to enable prediction.')
-flags.DEFINE_enum('prediction_type', 'linear', ['linear', 'r2p2'],
+flags.DEFINE_enum('prediction_type', 'linear', ['linear', 'r2p2', 'mfp'],
                   'Type of prediction module to use')
 
 ######################################################################

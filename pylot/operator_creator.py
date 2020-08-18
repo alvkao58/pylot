@@ -350,6 +350,21 @@ def add_r2p2_prediction(point_cloud_stream, obstacles_tracking_stream,
     return prediction_stream
 
 
+def add_mfp_prediction(point_cloud_stream, obstacles_tracking_stream,
+                        lidar_setup):
+    from pylot.prediction.mfp_predictor_operator import \
+            MFPPredictorOperator
+    op_config = erdos.OperatorConfig(name='mfp_prediction_operator',
+                                     log_file_name=FLAGS.log_file_name,
+                                     csv_log_file_name=FLAGS.csv_log_file_name,
+                                     profile_file_name=FLAGS.profile_file_name)
+    [prediction_stream
+     ] = erdos.connect(MFPPredictorOperator, op_config,
+                       [point_cloud_stream, obstacles_tracking_stream], FLAGS,
+                       lidar_setup)
+    return prediction_stream
+
+
 def add_prediction_evaluation(pose_stream,
                               tracking_stream,
                               prediction_stream,

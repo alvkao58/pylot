@@ -154,7 +154,7 @@ def create_center_lidar_setup(location, rotation_frequency=20, legacy=True):
         name='front_center_lidar',
         lidar_type='sensor.lidar.ray_cast',
         transform=lidar_transform,
-        range=10000,  # in centimeters
+        range=5000,  # in centimeters
         rotation_frequency=rotation_frequency,
         channels=32,
         upper_fov=15,

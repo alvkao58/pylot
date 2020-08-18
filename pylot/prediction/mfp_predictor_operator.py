@@ -1,25 +1,27 @@
-import time
-from collections import deque
-
 import erdos
 
+from typing import List, Set, Dict, Tuple, Optional, Union, Any
+from collections import deque
+import argparse
+import gin
+import math
 import numpy as np
-
-import pylot.prediction.utils
-from pylot.prediction.messages import PredictionMessage
-from pylot.prediction.obstacle_prediction import ObstaclePrediction
-from pylot.utils import Location, Transform, time_epoch_ms
-
+import os
+from pylot.utils import time_epoch_ms
+import time
 import torch
 
-try:
-    from prediction.r2p2.r2p2_model import R2P2
-except ImportError:
-    raise Exception('Error importing R2P2.')
+from multiple_futures_prediction.model_ngsim import mfpNet
+from multiple_futures_prediction.train_ngsim import Params
 
+import pylot.prediction.flags
+from pylot.prediction.messages import PredictionMessage
+from pylot.prediction.obstacle_prediction import ObstaclePrediction
+import pylot.prediction.utils
+from pylot.utils import Location, Rotation, Transform, Vector2D
 
-class R2P2PredictorOperator(erdos.Operator):
-    """Wrapper operator for R2P2 ego-vehicle prediction module.
+class MFPPredictorOperator(erdos.Operator):
+    """Wrapper operator for MFP prediction module.
 
     Args:
         point_cloud_stream (:py:class:`erdos.ReadStream`, optional): Stream on
@@ -31,13 +33,16 @@ class R2P2PredictorOperator(erdos.Operator):
         prediction_stream (:py:class:`erdos.ReadStream`): Stream on which
             :py:class:`~pylot.prediction.messages.PredictionMessage`
             messages are published.
-        lidar_setup (:py:class:`pylot.drivers.sensor_setup.LidarSetup`): Setup
-            of the lidar. This setup is used to get the maximum range of the
-            lidar.
-    """
-    def __init__(self, point_cloud_stream, tracking_stream, prediction_stream,
-                 flags, lidar_setup):
-        print("WARNING: R2P2 predicts only vehicle trajectories")
+        lidar_setup (:py:class:`pylot.drivers.sensor_setup.LidarSetup`): Lidar
+            setup is used to get the maximum range of the lidar.
+        """
+
+    def __init__(self,
+                 point_cloud_stream,
+                 tracking_stream,
+                 prediction_stream,
+                 flags,
+                 lidar_setup):
         self._logger = erdos.utils.setup_logging(self.config.name,
                                                  self.config.log_file_name)
         self._csv_logger = erdos.utils.setup_csv_logging(
@@ -45,14 +50,18 @@ class R2P2PredictorOperator(erdos.Operator):
         self._flags = flags
 
         self._device = torch.device('cuda')
-        self._r2p2_model = R2P2().to(self._device)
-        state_dict = torch.load(flags.r2p2_model_path)
-        self._r2p2_model.load_state_dict(state_dict)
+        gin.parse_config_file('/home/erdos/workspace/pylot/dependencies/multiple_futures_prediction/configs/mfp2_ngsim.gin')
+        params = Params(fut_len_orig_hz=self._flags.prediction_num_future_steps)()
+        assert params.fut_len_orig_hz == self._flags.prediction_num_future_steps
+        self._mfp_model = mfpNet(params).to(self._device)
+        state_dict = torch.load(flags.mfp_model_path)
+        self._mfp_model.load_state_dict(state_dict)
 
         point_cloud_stream.add_callback(self.on_point_cloud_update)
         tracking_stream.add_callback(self.on_trajectory_update)
-        erdos.add_watermark_callback([point_cloud_stream, tracking_stream],
-                                     [prediction_stream], self.on_watermark)
+        erdos.add_watermark_callback(
+            [point_cloud_stream, tracking_stream],
+            [prediction_stream], self.on_watermark)
 
         self._lidar_setup = lidar_setup
 
@@ -71,13 +80,13 @@ class R2P2PredictorOperator(erdos.Operator):
         tracking_msg = self._tracking_msgs.popleft()
 
         start_time = time.time()
-        nearby_trajectories, nearby_vehicle_ego_transforms, \
-            nearby_trajectories_tensor, binned_lidars_tensor = \
+        nearby_vehicle_trajectories, nearby_trajectories_tensor, nearby_vehicle_ego_transforms, \
+            binned_lidars_tensor, nbrs, nbrs_info = \
             self._preprocess_input(tracking_msg, point_cloud_msg)
 
-        num_predictions = len(nearby_trajectories)
+        num_predictions = len(nearby_trajectories_tensor)
         self._logger.info(
-            '@{}: Getting R2P2 predictions for {} vehicles'.format(
+            '@{}: Getting MFP predictions for {} vehicles'.format(
                 timestamp, num_predictions))
 
         if num_predictions == 0:
@@ -85,31 +94,29 @@ class R2P2PredictorOperator(erdos.Operator):
             return
 
         # Run the forward pass.
-        z = torch.tensor(
-            np.random.normal(size=(num_predictions,
-                                   self._flags.prediction_num_future_steps,
-                                   2))).to(torch.float32).to(self._device)
         model_start_time = time.time()
-        prediction_array, _ = self._r2p2_model.forward(
-            z, nearby_trajectories_tensor, binned_lidars_tensor)
+        prediction_array = self._mfp_model.forward_eval(
+            nearby_trajectories_tensor, nbrs, binned_lidars_tensor, nbrs_info,
+            num_traj=1)
         model_runtime = (time.time() - model_start_time) * 1000
         self._csv_logger.debug("{},{},{},{:.4f}".format(
             time_epoch_ms(), timestamp.coordinates[0],
-            'r2p2-modelonly-runtime', model_runtime))
-        prediction_array = prediction_array.cpu().detach().numpy()
+            'mfp-modelonly-runtime', model_runtime))
+        prediction_array = prediction_array[0].cpu().detach().numpy()
 
+        # Predictions for each vehicle are in coordinates wrt that vehicle;
+        # transform back to ego coordinates.
         obstacle_predictions_list = self._postprocess_predictions(
-            prediction_array, nearby_trajectories,
+            prediction_array, nearby_vehicle_trajectories, \
             nearby_vehicle_ego_transforms)
         runtime = (time.time() - start_time) * 1000
         self._csv_logger.debug("{},{},{},{:.4f}".format(
-            time_epoch_ms(), timestamp.coordinates[0], 'r2p2-runtime',
+            time_epoch_ms(), timestamp.coordinates[0], 'mfp-runtime',
             runtime))
         prediction_stream.send(
             PredictionMessage(timestamp, obstacle_predictions_list))
 
     def _preprocess_input(self, tracking_msg, point_cloud_msg):
-
         nearby_vehicle_trajectories, nearby_vehicle_ego_transforms = \
             tracking_msg.get_nearby_obstacles_info(
                 self._flags.prediction_radius,
@@ -119,77 +126,81 @@ class R2P2PredictorOperator(erdos.Operator):
         if num_nearby_vehicles == 0:
             return [], [], [], []
 
-        # Pad and rotate the trajectory of each nearby vehicle to its
-        # coordinate frame. Also, remove the z-coordinate of the trajectory.
+        # Remove the z-coordinate of the trajectory.
         nearby_trajectories_tensor = []  # Pytorch tensor for network input.
 
         for i in range(num_nearby_vehicles):
             cur_trajectory = nearby_vehicle_trajectories[
                 i].get_last_n_transforms(self._flags.prediction_num_past_steps)
-            cur_trajectory = np.stack(
-                [[point.location.x, point.location.y, point.location.z]
+            cur_trajectory = np.stack([[point.location.x, point.location.y]
                  for point in cur_trajectory])
 
-            rotated_trajectory = nearby_vehicle_ego_transforms[
-                i].inverse_transform_points(cur_trajectory)[:, :2]
+            nearby_trajectories_tensor.append(cur_trajectory)
 
-            nearby_trajectories_tensor.append(rotated_trajectory)
-
-        nearby_trajectories_tensor = np.stack(nearby_trajectories_tensor)
+        nearby_trajectories_tensor = np.stack(nearby_trajectories_tensor, axis=1)
         nearby_trajectories_tensor = torch.tensor(
             nearby_trajectories_tensor).to(torch.float32).to(self._device)
 
-        # For each vehicle, transform the lidar point cloud to that vehicle's
-        # coordinate frame for purposes of prediction.
-        binned_lidars = []
-        for i in range(num_nearby_vehicles):
-            rotated_point_cloud = nearby_vehicle_ego_transforms[
-                i].inverse_transform_points(point_cloud)
-            binned_lidars.append(
-                pylot.prediction.utils.get_occupancy_grid(
-                    rotated_point_cloud,
-                    self._lidar_setup.transform.location.z,
-                    int(self._lidar_setup.get_range_in_meters())))
-        binned_lidars = np.concatenate(binned_lidars)
+        # Bin the LIDAR.
+        occupancy_grid = pylot.prediction.utils.get_occupancy_grid(
+            point_cloud, self._lidar_setup.transform.location.z,
+            int(self._lidar_setup.get_range_in_meters()))
+        occupancy_grid = np.transpose(occupancy_grid, axes=(0,3,1,2))
+        binned_lidars = np.tile(occupancy_grid, (num_nearby_vehicles,1,1,1))
+        #print (binned_lidars.shape)
         binned_lidars_tensor = torch.tensor(binned_lidars).to(
             torch.float32).to(self._device)
 
-        return nearby_vehicle_trajectories, nearby_vehicle_ego_transforms, \
-            nearby_trajectories_tensor, binned_lidars_tensor
+        # Fill in neighbor trajectories for each vehicle.
+        nbrs = torch.zeros((self._flags.prediction_num_past_steps,
+                         num_nearby_vehicles*(num_nearby_vehicles-1), 2))
+        cnt = 0
+        for i in range(num_nearby_vehicles):
+            for j in range(num_nearby_vehicles):
+                if i != j:
+                    nbrs[:,cnt,:] = nearby_trajectories_tensor[:,j,:]
+                    cnt += 1
+        nbrs = nbrs.to(self._device)
+
+        # Nbrs_info dictionary.
+        nbrs_info = {}
+        for i in range(num_nearby_vehicles):
+          nbrs_info[i] = [(j,) for j in range(num_nearby_vehicles) if i != j]
+        nbrs_info = [nbrs_info]
+
+        return nearby_vehicle_trajectories, nearby_trajectories_tensor, \
+               nearby_vehicle_ego_transforms, binned_lidars_tensor, nbrs, \
+               nbrs_info
 
     def _postprocess_predictions(self, prediction_array, vehicle_trajectories,
                                  vehicle_ego_transforms):
-        # The prediction_array consists of predictions with respect to each
-        # vehicle. Transform each predicted trajectory to be in relation to the
-        # ego-vehicle, then convert into an ObstaclePrediction.
+        # Model predictions are already rotated to ego-vehicle orientation,
+        # just need to translate them.
         obstacle_predictions_list = []
         num_predictions = len(vehicle_trajectories)
 
         for idx in range(num_predictions):
-            cur_prediction = prediction_array[idx]
-
-            obstacle_transform = vehicle_trajectories[idx].obstacle.transform
-            predictions = []
-            # Because R2P2 only predicts (x,y) coordinates, we assume the
+            cur_prediction = prediction_array[:,idx,:]
+            predictions = [] 
+            # Because MFP only predicts (x,y) coordinates, we assume the
             # vehicle stays at the same height as its last location.
+            vehicle_ego_location = Transform(location=vehicle_ego_transforms[idx].location, rotation=Rotation())
             for t in range(self._flags.prediction_num_future_steps):
-                cur_point = vehicle_ego_transforms[idx].transform_points(
+                cur_point = vehicle_ego_location.transform_points(
                     np.array([[
                         cur_prediction[t][0], cur_prediction[t][1],
                         vehicle_ego_transforms[idx].location.z
                     ]]))[0]
-                # R2P2 does not predict vehicle orientation, so we use our
-                # estimated orientation of the vehicle at its latest location.
                 predictions.append(
                     Transform(location=Location(cur_point[0], cur_point[1],
                                                 cur_point[2]),
                               rotation=vehicle_ego_transforms[idx].rotation))
 
-            # Probability; currently a filler value because we are taking
-            # just one sample from distribution
+            obstacle_transform = vehicle_trajectories[idx].obstacle.transform
             obstacle_predictions_list.append(
                 ObstaclePrediction(vehicle_trajectories[idx],
                                    obstacle_transform, 1.0, predictions))
+                
         return obstacle_predictions_list
 
     def on_point_cloud_update(self, msg):

@@ -15,4 +15,9 @@ flags.DEFINE_boolean('prediction_ego_agent', False,
 # R2P2 Flags
 flags.DEFINE_string('r2p2_model_path',
                     'dependencies/models/prediction/r2p2/r2p2-model.pt',
-                    'Path to the model')
+                    'Path to the R2P2 model')
+
+# MFP flags
+flags.DEFINE_string('mfp_model_path',
+                    'dependencies/models/prediction/mfp/mfp-model.pth',
+                    'Path to the MFP model')
